@@ -206,7 +206,7 @@ fn regrowing_source_recovers_and_needs_water() {
 
 #[test]
 fn determinism_same_seed_params_and_commands() {
-    let cfg = chainlab_engine::scenarios::load("default").unwrap();
+    let cfg = chainlab_engine::scenarios::chain("default").unwrap();
     let script = |sim: &mut Sim| {
         let rate = sim.params.id("node.quarry.rate").unwrap();
         let carriers = sim.params.id("link.0.carriers").unwrap();

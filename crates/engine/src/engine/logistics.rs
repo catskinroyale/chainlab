@@ -41,6 +41,7 @@ pub fn tick(chain: &Chain, eff: &[i64], st: &mut State) {
     let State { nodes, links, .. } = st;
     for (li, link) in chain.links.iter().enumerate() {
         let ls = &mut links[li];
+        ls.delivered_tick = 0;
         let carriers = eff[link.p.carriers].max(0) as usize;
         let load_cap = eff[link.p.capacity].max(0);
         let travel = eff[link.p.distance].max(1) as u64;
@@ -56,6 +57,7 @@ pub fn tick(chain: &Chain, eff: &[i64], st: &mut State) {
                 *buf += d;
                 s.qty -= d;
                 ls.delivered_total += d;
+                ls.delivered_tick += d;
                 if s.qty == 0 {
                     s.return_at = Some(now + travel);
                 }

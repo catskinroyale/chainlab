@@ -7,6 +7,10 @@
 //!
 //! Parameters are addressed by a stable string key such as
 //! `node.kiln.cycle` or `link.0.carriers`, which is what save files use.
+//!
+//! The value you set is the *base* value. Upgrades, events, tier locks and
+//! the worker pool are layered on top to give the *effective* value the tick
+//! actually uses (see `Sim::eff`).
 
 use std::collections::BTreeMap;
 
@@ -29,23 +33,27 @@ pub enum Unit {
     Rate,
     /// Fixed-point dimensionless ratio.
     Ratio,
+    /// Fixed-point coin.
+    Coin,
     /// Integer ticks, shown as seconds.
     Ticks,
+    /// Index into a list of named options.
+    Choice(&'static [&'static str]),
 }
 
 impl Unit {
     pub fn to_human(self, v: i64) -> f64 {
         match self {
-            Unit::Bool | Unit::Count | Unit::Percent => v as f64,
-            Unit::Qty | Unit::Rate | Unit::Ratio => to_f64(v),
+            Unit::Bool | Unit::Count | Unit::Percent | Unit::Choice(_) => v as f64,
+            Unit::Qty | Unit::Rate | Unit::Ratio | Unit::Coin => to_f64(v),
             Unit::Ticks => v as f64 / TICKS_PER_SEC as f64,
         }
     }
 
     pub fn from_human(self, x: f64) -> i64 {
         match self {
-            Unit::Bool | Unit::Count | Unit::Percent => x.round() as i64,
-            Unit::Qty | Unit::Rate | Unit::Ratio => fx(x),
+            Unit::Bool | Unit::Count | Unit::Percent | Unit::Choice(_) => x.round() as i64,
+            Unit::Qty | Unit::Rate | Unit::Ratio | Unit::Coin => fx(x),
             Unit::Ticks => (x * TICKS_PER_SEC as f64).round() as i64,
         }
     }
@@ -58,7 +66,11 @@ impl Unit {
             Unit::Qty => format!("{:.1}", to_f64(v)),
             Unit::Rate => format!("{:.2}/s", to_f64(v)),
             Unit::Ratio => format!("{:.3}", to_f64(v)),
+            Unit::Coin => format!("{:.1}c", to_f64(v)),
             Unit::Ticks => format!("{:.1}s", self.to_human(v)),
+            Unit::Choice(names) => names
+                .get(v.max(0) as usize)
+                .map_or_else(|| v.to_string(), |s| s.to_string()),
         }
     }
 }
@@ -68,7 +80,10 @@ impl Unit {
 pub enum Group {
     Node(usize),
     Link(usize),
+    Market,
+    Costs,
     Global,
+    Events,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -97,6 +112,10 @@ impl Param {
     }
     pub fn display_default(&self) -> String {
         self.unit.format(self.default)
+    }
+    /// Label without the "Node: " prefix.
+    pub fn short_label(&self) -> &str {
+        self.label.rsplit(": ").next().unwrap_or(&self.label)
     }
 }
 
@@ -176,6 +195,22 @@ impl ParamSet {
     pub fn values(&self) -> Vec<Fx> {
         self.list.iter().map(|p| p.value).collect()
     }
+
+    /// Current values in human units, keyed (for saving).
+    pub fn to_human_map(&self) -> BTreeMap<String, f64> {
+        self.list
+            .iter()
+            .map(|p| (p.key.clone(), p.unit.to_human(p.value)))
+            .collect()
+    }
+
+    /// Distinct groups in display order.
+    pub fn groups(&self) -> Vec<Group> {
+        let mut g: Vec<Group> = self.list.iter().map(|p| p.group).collect();
+        g.sort();
+        g.dedup();
+        g
+    }
 }
 
 #[cfg(test)]
@@ -187,7 +222,7 @@ mod tests {
         let mut ps = ParamSet::default();
         let id = ps.add(
             "x.cycle",
-            "cycle",
+            "Kiln: cycle",
             Group::Global,
             Unit::Ticks,
             40,
@@ -195,11 +230,17 @@ mod tests {
             (1, 10),
         );
         assert_eq!(ps.list[id].display(), "4.0s");
+        assert_eq!(ps.list[id].short_label(), "cycle");
         ps.list[id].set(500);
         assert_eq!(ps.get(id), 100);
         assert!(ps.list[id].changed());
         ps.set_human("x.cycle", 2.5).unwrap();
         assert_eq!(ps.get(id), 25);
         assert!(ps.set_human("nope", 1.0).is_err());
+    }
+
+    #[test]
+    fn choice_unit_formats_names() {
+        assert_eq!(Unit::Choice(&["a", "b"]).format(1), "b");
     }
 }

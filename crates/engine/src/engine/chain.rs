@@ -2,13 +2,13 @@
 //!
 //! [`compile`] turns a human-readable [`ChainConfig`] into index-based
 //! structures (no string lookups during a tick) and registers every live
-//! parameter in a [`ParamSet`]. Nothing here changes while the sim runs; the
-//! changing parts live in [`super::model::State`].
+//! parameter ("lever") in a [`ParamSet`]. Nothing here changes while the sim
+//! runs; the changing parts live in [`super::model::State`].
 
 use std::collections::BTreeMap;
 
 use crate::TICKS_PER_SEC;
-use crate::config::{ChainConfig, NodeKindDef, StockDef};
+use crate::config::{ChainConfig, EffectDef, GateCond, NodeKindDef, StockDef};
 use crate::fixed::{Fx, fx};
 
 use super::params::{Group, ParamId, ParamSet, Unit};
@@ -16,6 +16,8 @@ use super::params::{Group, ParamId, ParamSet, Unit};
 pub type ResId = usize;
 pub type NodeId = usize;
 pub type LinkId = usize;
+
+pub const POLICIES: &[&str] = &["sell all", "above thresh", "keep reserve"];
 
 #[derive(Clone, Debug)]
 pub struct Resource {
@@ -31,7 +33,13 @@ pub struct Chain {
     pub links: Vec<Link>,
     /// Topological processing order (upstream first; ties by index).
     pub order: Vec<NodeId>,
+    /// Longest-path depth of each node from a source (for the diagram).
+    pub depth: Vec<usize>,
     pub g: GlobalParams,
+    pub market: Option<MarketSpec>,
+    pub upgrades: Vec<Upgrade>,
+    pub gates: Vec<Gate>,
+    pub start_coin: Fx,
 }
 
 #[derive(Clone, Debug)]
@@ -43,7 +51,9 @@ pub struct Node {
     pub in_res: Vec<ResId>,
     /// Resources this node buffers on its output side.
     pub out_res: Vec<ResId>,
+    /// Optimal crew per building.
     pub optimal_workers: i64,
+    pub tier: u32,
     pub p: NodeParams,
 }
 
@@ -51,6 +61,19 @@ pub struct Node {
 pub enum Kind {
     Source(SourceSpec),
     Processor(RecipeSpec),
+    Sink(SinkSpec),
+    Market,
+}
+
+impl Kind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Kind::Source(_) => "source",
+            Kind::Processor(_) => "processor",
+            Kind::Sink(_) => "sink",
+            Kind::Market => "market",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -79,6 +102,13 @@ pub struct RecipeSpec {
     pub batch: i64,
 }
 
+/// Sink set definition, aligned with `in_res`.
+#[derive(Clone, Debug)]
+pub struct SinkSpec {
+    pub inputs: Vec<Fx>,
+    pub progress: Fx,
+}
+
 #[derive(Clone, Debug)]
 pub struct Link {
     pub from: NodeId,
@@ -95,6 +125,7 @@ pub struct Link {
 pub struct NodeParams {
     pub enabled: ParamId,
     pub efficiency: ParamId,
+    pub units: Option<ParamId>,
     pub workers: Option<ParamId>,
     pub in_cap: Option<ParamId>,
     pub out_cap: Option<ParamId>,
@@ -104,6 +135,8 @@ pub struct NodeParams {
     pub variance: Option<ParamId>,
     /// Processors: cycle length in ticks.
     pub cycle: Option<ParamId>,
+    /// Sinks: sets per second.
+    pub lift: Option<ParamId>,
 }
 
 #[derive(Clone, Debug)]
@@ -115,9 +148,67 @@ pub struct LinkParams {
 
 #[derive(Clone, Debug)]
 pub struct GlobalParams {
+    pub workers_total: ParamId,
+    pub upkeep: ParamId,
     pub diminishing: ParamId,
     pub water: ParamId,
     pub regrowth: ParamId,
+    pub discount: ParamId,
+    pub ev_enabled: ParamId,
+    pub ev_frequency: ParamId,
+    pub ev_severity: ParamId,
+}
+
+#[derive(Clone, Debug)]
+pub struct MarketSpec {
+    pub node: NodeId,
+    /// Aligned with `nodes[node].in_res`.
+    pub goods: Vec<Good>,
+    pub policy: ParamId,
+    pub threshold: ParamId,
+    pub reserve: ParamId,
+    pub sell_rate: ParamId,
+}
+
+#[derive(Clone, Debug)]
+pub struct Good {
+    pub res: ResId,
+    pub base_price: ParamId,
+    pub elasticity: ParamId,
+    pub recovery: ParamId,
+    pub volatility: ParamId,
+}
+
+#[derive(Clone, Debug)]
+pub enum Effect {
+    Add(i64),
+    Mul(f64),
+}
+
+#[derive(Clone, Debug)]
+pub struct Upgrade {
+    pub id: String,
+    pub name: String,
+    pub effects: Vec<(ParamId, Effect)>,
+    pub max_level: Option<u32>,
+    pub tier: u32,
+    pub base_cost: ParamId,
+    pub growth: ParamId,
+}
+
+#[derive(Clone, Debug)]
+pub enum Cond {
+    Progress(Fx),
+    Coin(Fx),
+    Profit(Fx),
+    Produced(NodeId, Fx),
+}
+
+#[derive(Clone, Debug)]
+pub struct Gate {
+    pub name: String,
+    pub description: String,
+    pub cond: Cond,
 }
 
 impl Chain {
@@ -134,6 +225,37 @@ impl Chain {
             self.nodes[link.from].name, self.nodes[link.to].name
         )
     }
+    pub fn upgrade_index(&self, id: &str) -> Option<usize> {
+        self.upgrades.iter().position(|u| u.id == id)
+    }
+    /// Links feeding into `n`.
+    pub fn inbound(&self, n: NodeId) -> impl Iterator<Item = (LinkId, &Link)> {
+        self.links
+            .iter()
+            .enumerate()
+            .filter(move |(_, l)| l.to == n)
+    }
+    /// Links leaving `n`.
+    pub fn outbound(&self, n: NodeId) -> impl Iterator<Item = (LinkId, &Link)> {
+        self.links
+            .iter()
+            .enumerate()
+            .filter(move |(_, l)| l.from == n)
+    }
+    /// Nodes that make "end-to-end" output: sinks if any, else the market.
+    pub fn sinks(&self) -> Vec<NodeId> {
+        let s: Vec<_> = (0..self.nodes.len())
+            .filter(|&i| matches!(self.nodes[i].kind, Kind::Sink(_)))
+            .collect();
+        if s.is_empty() {
+            self.market
+                .as_ref()
+                .map(|m| vec![m.node])
+                .unwrap_or_default()
+        } else {
+            s
+        }
+    }
 }
 
 const QTY_RANGE: (i64, i64) = (0, 10_000_000);
@@ -145,18 +267,16 @@ pub fn compile(cfg: &ChainConfig) -> Result<(Chain, ParamSet), String> {
 
     // Resources
     let mut res_ix: BTreeMap<&str, ResId> = BTreeMap::new();
-    let resources: Vec<Resource> = cfg
-        .resources
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            res_ix.insert(r.id.as_str(), i);
-            Resource {
-                id: r.id.clone(),
-                name: r.name.clone(),
-            }
-        })
-        .collect();
+    let mut resources = Vec::new();
+    for (i, r) in cfg.resources.iter().enumerate() {
+        if res_ix.insert(r.id.as_str(), i).is_some() {
+            return Err(format!("duplicate resource id '{}'", r.id));
+        }
+        resources.push(Resource {
+            id: r.id.clone(),
+            name: r.name.clone(),
+        });
+    }
     let res = |id: &str| -> Result<ResId, String> {
         res_ix
             .get(id)
@@ -164,40 +284,97 @@ pub fn compile(cfg: &ChainConfig) -> Result<(Chain, ParamSet), String> {
             .ok_or_else(|| format!("unknown resource '{id}'"))
     };
 
-    // Globals first so their ids are stable and easy to find.
+    // Globals
+    let gd = &cfg.globals;
+    let gg = Group::Global;
     let g = GlobalParams {
+        workers_total: ps.add(
+            "global.workers",
+            "Worker pool",
+            gg,
+            Unit::Count,
+            gd.workers_total as i64,
+            (0, 500),
+            (1, 5),
+        ),
+        upkeep: ps.add(
+            "global.upkeep",
+            "Upkeep /worker/min",
+            gg,
+            Unit::Coin,
+            fx(gd.worker_upkeep),
+            (0, 1_000_000),
+            (100, 1_000),
+        ),
         diminishing: ps.add(
             "global.diminishing",
             "Over-crew returns",
-            Group::Global,
+            gg,
             Unit::Percent,
-            cfg.globals.diminishing as i64,
+            gd.diminishing as i64,
             (0, 100),
             (5, 20),
         ),
         water: ps.add(
             "global.water",
             "Water supply",
-            Group::Global,
+            gg,
             Unit::Rate,
-            fx(cfg.globals.water_supply),
+            fx(gd.water_supply),
             QTY_RANGE,
             (100, 1_000),
         ),
         regrowth: ps.add(
             "global.regrowth",
             "Regrowth rate",
-            Group::Global,
+            gg,
             Unit::Ratio,
-            fx(cfg.globals.regrowth),
+            fx(gd.regrowth),
             (0, 1_000),
             (5, 50),
+        ),
+        discount: ps.add(
+            "cost.discount",
+            "Bulk discount",
+            Group::Costs,
+            Unit::Percent,
+            gd.cost_discount as i64,
+            (0, 90),
+            (5, 20),
+        ),
+        ev_enabled: ps.add(
+            "events.enabled",
+            "Random events",
+            Group::Events,
+            Unit::Bool,
+            cfg.events.enabled as i64,
+            (0, 1),
+            (1, 1),
+        ),
+        ev_frequency: ps.add(
+            "events.frequency",
+            "Events per minute",
+            Group::Events,
+            Unit::Ratio,
+            fx(cfg.events.frequency),
+            (0, 20_000),
+            (100, 1_000),
+        ),
+        ev_severity: ps.add(
+            "events.severity",
+            "Event severity",
+            Group::Events,
+            Unit::Percent,
+            cfg.events.severity as i64,
+            (0, 100),
+            (5, 20),
         ),
     };
 
     // Nodes
     let mut node_ix: BTreeMap<&str, NodeId> = BTreeMap::new();
     let mut nodes = Vec::with_capacity(cfg.nodes.len());
+    let mut market_node = None;
     for (ni, nd) in cfg.nodes.iter().enumerate() {
         if node_ix.insert(nd.id.as_str(), ni).is_some() {
             return Err(format!("duplicate node id '{}'", nd.id));
@@ -222,7 +399,7 @@ pub fn compile(cfg: &ChainConfig) -> Result<(Chain, ParamSet), String> {
                 grp,
                 Unit::Count,
                 nd.workers as i64,
-                (0, 100),
+                (0, 200),
                 (1, 5),
             )
         });
@@ -235,8 +412,23 @@ pub fn compile(cfg: &ChainConfig) -> Result<(Chain, ParamSet), String> {
             (5, 500),
             (5, 25),
         );
+        let units = (!matches!(nd.kind, NodeKindDef::Market)).then(|| {
+            ps.add(
+                key("units"),
+                label("buildings"),
+                grp,
+                Unit::Count,
+                nd.units.max(1) as i64,
+                (1, 100),
+                (1, 5),
+            )
+        });
 
-        let (kind, in_res, out_res, rate, variance, cycle) = match &nd.kind {
+        let mut rate = None;
+        let mut variance = None;
+        let mut cycle = None;
+        let mut lift = None;
+        let (kind, in_res, out_res) = match &nd.kind {
             NodeKindDef::Source(s) => {
                 let stock = match s.stock {
                     StockDef::Infinite => StockSpec::Infinite,
@@ -253,7 +445,7 @@ pub fn compile(cfg: &ChainConfig) -> Result<(Chain, ParamSet), String> {
                         water_need: fx(water_need),
                     },
                 };
-                let rate = ps.add(
+                rate = Some(ps.add(
                     key("rate"),
                     label("harvest rate"),
                     grp,
@@ -261,8 +453,8 @@ pub fn compile(cfg: &ChainConfig) -> Result<(Chain, ParamSet), String> {
                     fx(s.rate),
                     QTY_RANGE,
                     (100, 1_000),
-                );
-                let variance = ps.add(
+                ));
+                variance = Some(ps.add(
                     key("variance"),
                     label("yield variance"),
                     grp,
@@ -270,33 +462,20 @@ pub fn compile(cfg: &ChainConfig) -> Result<(Chain, ParamSet), String> {
                     s.variance as i64,
                     (0, 100),
                     (5, 20),
-                );
+                ));
                 (
                     Kind::Source(SourceSpec { stock }),
                     vec![],
                     vec![res(&s.output)?],
-                    Some(rate),
-                    Some(variance),
-                    None,
                 )
             }
             NodeKindDef::Processor(r) => {
                 if r.inputs.is_empty() || r.outputs.is_empty() {
                     return Err(format!("processor '{}' needs inputs and outputs", nd.id));
                 }
-                let mut in_res = vec![];
-                let mut inputs = vec![];
-                for (rid, q) in &r.inputs {
-                    in_res.push(res(rid)?);
-                    inputs.push(fx(*q));
-                }
-                let mut out_res = vec![];
-                let mut outputs = vec![];
-                for (rid, q) in &r.outputs {
-                    out_res.push(res(rid)?);
-                    outputs.push(fx(*q));
-                }
-                let cycle = ps.add(
+                let (in_res, inputs) = split(&r.inputs, &res)?;
+                let (out_res, outputs) = split(&r.outputs, &res)?;
+                cycle = Some(ps.add(
                     key("cycle"),
                     label("cycle time"),
                     grp,
@@ -304,7 +483,7 @@ pub fn compile(cfg: &ChainConfig) -> Result<(Chain, ParamSet), String> {
                     (r.cycle_secs * TICKS_PER_SEC as f64).round() as i64,
                     (1, 36_000),
                     (1, 10),
-                );
+                ));
                 (
                     Kind::Processor(RecipeSpec {
                         inputs,
@@ -313,10 +492,40 @@ pub fn compile(cfg: &ChainConfig) -> Result<(Chain, ParamSet), String> {
                     }),
                     in_res,
                     out_res,
-                    None,
-                    None,
-                    Some(cycle),
                 )
+            }
+            NodeKindDef::Sink(s) => {
+                if s.inputs.is_empty() {
+                    return Err(format!("sink '{}' needs inputs", nd.id));
+                }
+                let (in_res, inputs) = split(&s.inputs, &res)?;
+                lift = Some(ps.add(
+                    key("lift"),
+                    label("lift rate"),
+                    grp,
+                    Unit::Rate,
+                    fx(s.lift_rate),
+                    QTY_RANGE,
+                    (50, 500),
+                ));
+                (
+                    Kind::Sink(SinkSpec {
+                        inputs,
+                        progress: fx(s.progress),
+                    }),
+                    in_res,
+                    vec![],
+                )
+            }
+            NodeKindDef::Market => {
+                if market_node.replace(ni).is_some() {
+                    return Err("only one Market node is supported".into());
+                }
+                let mut in_res = vec![];
+                for gdef in &cfg.market.goods {
+                    in_res.push(res(&gdef.resource)?);
+                }
+                (Kind::Market, in_res, vec![])
             }
         };
 
@@ -350,15 +559,18 @@ pub fn compile(cfg: &ChainConfig) -> Result<(Chain, ParamSet), String> {
             in_res,
             out_res,
             optimal_workers: nd.optimal_workers as i64,
+            tier: nd.tier,
             p: NodeParams {
                 enabled,
                 efficiency,
+                units,
                 workers,
                 in_cap,
                 out_cap,
                 rate,
                 variance,
                 cycle,
+                lift,
             },
         });
     }
@@ -384,7 +596,7 @@ pub fn compile(cfg: &ChainConfig) -> Result<(Chain, ParamSet), String> {
             .position(|&x| x == r)
             .ok_or_else(|| format!("link {li}: '{}' does not take '{}'", ld.to, ld.resource))?;
         let key = |s: &str| format!("link.{li}.{s}");
-        let label = |s: &str| format!("{}->{}: {s}", nodes[from].name, nodes[to].name);
+        let label = |s: &str| format!("{}>{}: {s}", nodes[from].name, nodes[to].name);
         let grp = Group::Link(li);
         let p = LinkParams {
             carriers: ps.add(
@@ -393,7 +605,7 @@ pub fn compile(cfg: &ChainConfig) -> Result<(Chain, ParamSet), String> {
                 grp,
                 Unit::Count,
                 ld.carriers as i64,
-                (0, 100),
+                (0, 200),
                 (1, 5),
             ),
             capacity: ps.add(
@@ -425,7 +637,185 @@ pub fn compile(cfg: &ChainConfig) -> Result<(Chain, ParamSet), String> {
         });
     }
 
+    // Market
+    let market = match market_node {
+        None => None,
+        Some(node) => {
+            let md = &cfg.market;
+            let gm = Group::Market;
+            let policy = ps.add(
+                "market.policy",
+                "Sell policy",
+                gm,
+                Unit::Choice(POLICIES),
+                md.policy.min(2) as i64,
+                (0, 2),
+                (1, 1),
+            );
+            let threshold = ps.add(
+                "market.threshold",
+                "Threshold % of base",
+                gm,
+                Unit::Percent,
+                md.threshold_pct as i64,
+                (0, 300),
+                (5, 20),
+            );
+            let reserve = ps.add(
+                "market.reserve",
+                "Reserve kept",
+                gm,
+                Unit::Qty,
+                fx(md.reserve),
+                QTY_RANGE,
+                QTY_STEPS,
+            );
+            let sell_rate = ps.add(
+                "market.sell_rate",
+                "Sell rate per good",
+                gm,
+                Unit::Rate,
+                fx(md.sell_rate),
+                QTY_RANGE,
+                (100, 1_000),
+            );
+            let mut goods = vec![];
+            for gdef in &md.goods {
+                let r = res(&gdef.resource)?;
+                let nm = &resources[r].name;
+                let key = |s: &str| format!("market.{}.{s}", gdef.resource);
+                goods.push(Good {
+                    res: r,
+                    base_price: ps.add(
+                        key("price"),
+                        format!("{nm}: base price"),
+                        gm,
+                        Unit::Coin,
+                        fx(gdef.base_price),
+                        (0, 1_000_000_000),
+                        (100, 1_000),
+                    ),
+                    elasticity: ps.add(
+                        key("elasticity"),
+                        format!("{nm}: elasticity"),
+                        gm,
+                        Unit::Ratio,
+                        fx(gdef.elasticity),
+                        (0, 1_000),
+                        (2, 20),
+                    ),
+                    recovery: ps.add(
+                        key("recovery"),
+                        format!("{nm}: recovery"),
+                        gm,
+                        Unit::Ratio,
+                        fx(gdef.recovery),
+                        (0, 1_000),
+                        (5, 50),
+                    ),
+                    volatility: ps.add(
+                        key("volatility"),
+                        format!("{nm}: volatility"),
+                        gm,
+                        Unit::Percent,
+                        gdef.volatility as i64,
+                        (0, 100),
+                        (5, 20),
+                    ),
+                });
+            }
+            Some(MarketSpec {
+                node,
+                goods,
+                policy,
+                threshold,
+                reserve,
+                sell_rate,
+            })
+        }
+    };
+
+    // Upgrades (effects resolved after every parameter exists)
+    let mut upgrades = vec![];
+    for ud in &cfg.upgrades {
+        let key = |s: &str| format!("cost.{}.{s}", ud.id);
+        let base_cost = ps.add(
+            key("base"),
+            format!("{}: base cost", ud.name),
+            Group::Costs,
+            Unit::Coin,
+            fx(ud.base_cost),
+            (0, 1_000_000_000),
+            (1_000, 10_000),
+        );
+        let growth = ps.add(
+            key("growth"),
+            format!("{}: growth", ud.name),
+            Group::Costs,
+            Unit::Ratio,
+            fx(ud.growth),
+            (1_000, 5_000),
+            (10, 100),
+        );
+        let mut effects = vec![];
+        for e in &ud.effects {
+            let (k, eff) = match e {
+                EffectDef::Add(k, amount) => {
+                    let id = ps
+                        .id(k)
+                        .ok_or_else(|| format!("upgrade '{}': unknown parameter '{k}'", ud.id))?;
+                    (id, Effect::Add(ps.list[id].unit.from_human(*amount)))
+                }
+                EffectDef::Mul(k, f) => {
+                    let id = ps
+                        .id(k)
+                        .ok_or_else(|| format!("upgrade '{}': unknown parameter '{k}'", ud.id))?;
+                    (id, Effect::Mul(*f))
+                }
+            };
+            effects.push((k, eff));
+        }
+        upgrades.push(Upgrade {
+            id: ud.id.clone(),
+            name: ud.name.clone(),
+            effects,
+            max_level: ud.max_level,
+            tier: ud.tier,
+            base_cost,
+            growth,
+        });
+    }
+
+    // Gates
+    let mut gates = vec![];
+    for gd in &cfg.gates {
+        let cond = match &gd.condition {
+            GateCond::Progress(x) => Cond::Progress(fx(*x)),
+            GateCond::Coin(x) => Cond::Coin(fx(*x)),
+            GateCond::Profit(x) => Cond::Profit(fx(*x)),
+            GateCond::Produced(n, x) => Cond::Produced(
+                *node_ix
+                    .get(n.as_str())
+                    .ok_or_else(|| format!("gate '{}': unknown node '{n}'", gd.name))?,
+                fx(*x),
+            ),
+        };
+        gates.push(Gate {
+            name: gd.name.clone(),
+            description: gd.description.clone(),
+            cond,
+        });
+    }
+
     let order = topo_order(nodes.len(), &links);
+    let mut depth = vec![0usize; nodes.len()];
+    for &n in &order {
+        for l in links.iter().filter(|l| l.from == n) {
+            if l.to != n {
+                depth[l.to] = depth[l.to].max(depth[n] + 1);
+            }
+        }
+    }
     Ok((
         Chain {
             name: cfg.name.clone(),
@@ -433,10 +823,27 @@ pub fn compile(cfg: &ChainConfig) -> Result<(Chain, ParamSet), String> {
             nodes,
             links,
             order,
+            depth,
             g,
+            market,
+            upgrades,
+            gates,
+            start_coin: fx(gd.start_coin),
         },
         ps,
     ))
+}
+
+type ResLookup<'a> = dyn Fn(&str) -> Result<ResId, String> + 'a;
+
+fn split(list: &[(String, f64)], res: &ResLookup) -> Result<(Vec<ResId>, Vec<Fx>), String> {
+    let mut ids = vec![];
+    let mut qty = vec![];
+    for (r, q) in list {
+        ids.push(res(r)?);
+        qty.push(fx(*q));
+    }
+    Ok((ids, qty))
 }
 
 /// Kahn's algorithm, always picking the lowest-index ready node so the order

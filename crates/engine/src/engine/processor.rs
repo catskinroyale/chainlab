@@ -52,27 +52,33 @@ enum Start {
     Blocked,
 }
 
-/// Output per batch after efficiency.
-fn batch_out(recipe: &RecipeSpec, j: usize, eff_pct: i64) -> Fx {
-    pct(recipe.outputs[j] * recipe.batch, eff_pct)
+/// Recipe multiples per cycle: batch size times parallel buildings.
+fn multiples(node: &Node, recipe: &RecipeSpec, eff: &[i64]) -> i64 {
+    recipe.batch * node.p.units.map_or(1, |p| eff[p]).max(1)
+}
+
+/// Output per cycle after efficiency.
+fn batch_out(recipe: &RecipeSpec, j: usize, eff_pct: i64, mult: i64) -> Fx {
+    pct(recipe.outputs[j] * mult, eff_pct)
 }
 
 fn try_start(node: &Node, recipe: &RecipeSpec, eff: &[i64], ns: &mut NodeState) -> Start {
     let out_cap = node.p.out_cap.map_or(0, |p| eff[p]);
     let eff_pct = eff[node.p.efficiency];
+    let mult = multiples(node, recipe, eff);
     for j in 0..recipe.outputs.len() {
         let space = out_cap - ns.outputs[j] - ns.pending_out[j];
-        if space < batch_out(recipe, j, eff_pct) {
+        if space < batch_out(recipe, j, eff_pct, mult) {
             return Start::Blocked;
         }
     }
     for (i, &q) in recipe.inputs.iter().enumerate() {
-        if ns.inputs[i] < q * recipe.batch {
+        if ns.inputs[i] < q * mult {
             return Start::Starved;
         }
     }
     for (i, &q) in recipe.inputs.iter().enumerate() {
-        ns.inputs[i] -= q * recipe.batch;
+        ns.inputs[i] -= q * mult;
     }
     ns.in_cycle = true;
     Start::Ok
@@ -118,9 +124,10 @@ pub fn tick(node: &Node, recipe: &RecipeSpec, eff: &[i64], ns: &mut NodeState, c
     ns.progress += crew;
     let cycle_total = node.p.cycle.map_or(1, |p| eff[p]).max(1) * ONE;
     let eff_pct = eff[node.p.efficiency];
+    let mult = multiples(node, recipe, eff);
     while ns.in_cycle && ns.progress >= cycle_total {
         for j in 0..recipe.outputs.len() {
-            let q = batch_out(recipe, j, eff_pct);
+            let q = batch_out(recipe, j, eff_pct, mult);
             ns.pending_out[j] += q;
             if j == 0 {
                 ns.out_tick += q;

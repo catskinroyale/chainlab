@@ -4,7 +4,7 @@
 //! forest being logged. Each tick it produces
 //!
 //! ```text
-//! yield = rate/tick * crew factor * efficiency% * (1 +/- variance)
+//! yield = rate/tick * buildings * crew factor * efficiency% * (1 +/- variance)
 //! ```
 //!
 //! capped by the free space in its output buffer. If that buffer is full the
@@ -99,7 +99,8 @@ fn harvest(node: &Node, stock: &StockSpec, eff: &[i64], ns: &mut NodeState, crew
         ns.status = Status::Blocked;
         return;
     }
-    let rate_per_tick = node.p.rate.map_or(0, |p| eff[p]) / TICKS_PER_SEC as i64;
+    let units = node.p.units.map_or(1, |p| eff[p]);
+    let rate_per_tick = node.p.rate.map_or(0, |p| eff[p]) * units / TICKS_PER_SEC as i64;
     let mut amt = pct(mul(rate_per_tick, crew), eff[node.p.efficiency]);
     let variance = node.p.variance.map_or(0, |p| eff[p]);
     if variance > 0 {

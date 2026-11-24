@@ -1,40 +1,122 @@
-// CHAINLAB default chain (milestone 1: one branch).
-// Units: quantities in units, times in seconds, efficiency in percent.
+// CHAINLAB default chain.
+//
+//   Branch A:  Stone Quarry --haul--> Kiln ----haul--+--> Tower Builder (Progress)
+//   Branch B:  Forest -------haul--> Sawmill --haul--+
+//   Surplus:   Kiln, Sawmill --haul--> Market (Coin)
+//   Tier 2:    Deep Quarry --haul--> Kiln
+//
+// Units: quantities in units, times in seconds, efficiency in percent,
+// money in coin. Links leaving the same node are served in the order listed
+// here, so the Tower links come first and the Market only gets surplus.
 (
     name: "Default",
     resources: [
         (id: "stone", name: "Stone"),
+        (id: "logs", name: "Logs"),
         (id: "bricks", name: "Bricks"),
+        (id: "planks", name: "Planks"),
     ],
     globals: (
+        workers_total: 12,
+        worker_upkeep: 1.0,
+        start_coin: 100.0,
         diminishing: 50,
         water_supply: 1.0,
         regrowth: 0.05,
+        cost_discount: 0,
     ),
     nodes: [
         (
-            id: "quarry",
-            name: "Stone Quarry",
+            id: "quarry", name: "Stone Quarry",
             kind: Source(output: "stone", rate: 1.0, variance: 15),
-            out_cap: 20.0,
-            workers: 2,
-            optimal_workers: 2,
+            out_cap: 20.0, workers: 2, optimal_workers: 2,
         ),
         (
-            id: "kiln",
-            name: "Kiln",
-            kind: Processor(
-                inputs: [("stone", 2.0)],
-                outputs: [("bricks", 1.0)],
-                cycle_secs: 4.0,
+            id: "forest", name: "Forest",
+            kind: Source(
+                output: "logs", rate: 0.5, variance: 10,
+                stock: Regrowing(standing: 80.0, max: 100.0, water_need: 1.0),
             ),
-            in_cap: 20.0,
-            out_cap: 30.0,
-            workers: 2,
-            optimal_workers: 2,
+            out_cap: 15.0, workers: 2, optimal_workers: 2,
+        ),
+        (
+            id: "deep_quarry", name: "Deep Quarry",
+            kind: Source(output: "stone", rate: 1.0, variance: 5, stock: Depleting(amount: 600.0)),
+            out_cap: 20.0, workers: 0, optimal_workers: 2, tier: 2,
+        ),
+        (
+            id: "kiln", name: "Kiln",
+            kind: Processor(inputs: [("stone", 2.0)], outputs: [("bricks", 1.0)], cycle_secs: 4.0),
+            in_cap: 20.0, out_cap: 30.0, workers: 2, optimal_workers: 2,
+        ),
+        (
+            id: "sawmill", name: "Sawmill",
+            kind: Processor(inputs: [("logs", 1.0)], outputs: [("planks", 1.0)], cycle_secs: 3.0),
+            in_cap: 15.0, out_cap: 30.0, workers: 2, optimal_workers: 2,
+        ),
+        (
+            id: "tower", name: "Tower Builder",
+            kind: Sink(inputs: [("bricks", 2.0), ("planks", 1.0)], progress: 1.0, lift_rate: 0.15),
+            in_cap: 20.0, workers: 2, optimal_workers: 2,
+        ),
+        (
+            id: "market", name: "Market",
+            kind: Market,
+            in_cap: 40.0,
         ),
     ],
     links: [
-        (from: "quarry", to: "kiln", resource: "stone", carriers: 2, capacity: 4.0, distance_secs: 3.0),
+        (from: "quarry",      to: "kiln",    resource: "stone",  carriers: 2, capacity: 4.0, distance_secs: 3.0),
+        (from: "forest",      to: "sawmill", resource: "logs",   carriers: 2, capacity: 3.0, distance_secs: 5.0),
+        (from: "kiln",        to: "tower",   resource: "bricks", carriers: 2, capacity: 5.0, distance_secs: 4.0),
+        (from: "sawmill",     to: "tower",   resource: "planks", carriers: 1, capacity: 4.0, distance_secs: 4.0),
+        (from: "kiln",        to: "market",  resource: "bricks", carriers: 1, capacity: 5.0, distance_secs: 6.0),
+        (from: "sawmill",     to: "market",  resource: "planks", carriers: 1, capacity: 5.0, distance_secs: 6.0),
+        (from: "deep_quarry", to: "kiln",    resource: "stone",  carriers: 2, capacity: 4.0, distance_secs: 6.0),
     ],
+    market: (
+        goods: [
+            (resource: "bricks", base_price: 4.0, elasticity: 0.02, recovery: 0.05, volatility: 10),
+            (resource: "planks", base_price: 3.0, elasticity: 0.02, recovery: 0.05, volatility: 10),
+        ],
+        policy: 0,
+        threshold_pct: 80,
+        reserve: 0.0,
+        sell_rate: 2.0,
+    ),
+    upgrades: [
+        (id: "quarry_rate", name: "Quarry: sharper picks", base_cost: 30.0, growth: 1.15,
+         effects: [Add("node.quarry.rate", 0.25)]),
+        (id: "kiln_speed", name: "Kiln: hotter fire", base_cost: 40.0, growth: 1.18,
+         effects: [Mul("node.kiln.cycle", 0.9)]),
+        (id: "kiln_build", name: "Kiln: build another", base_cost: 120.0, growth: 1.6,
+         effects: [Add("node.kiln.units", 1.0)]),
+        (id: "forest_rate", name: "Forest: more axes", base_cost: 30.0, growth: 1.2,
+         effects: [Add("node.forest.rate", 0.15)]),
+        (id: "saw_speed", name: "Sawmill: new blades", base_cost: 40.0, growth: 1.18,
+         effects: [Mul("node.sawmill.cycle", 0.9)]),
+        (id: "well", name: "Dig a well", base_cost: 50.0, growth: 1.3,
+         effects: [Add("global.water", 0.25)]),
+        (id: "haul_qk", name: "Quarry haul: +1 cart", base_cost: 25.0, growth: 1.3,
+         effects: [Add("link.0.carriers", 1.0)]),
+        (id: "haul_kt", name: "Brick haul: +1 cart", base_cost: 25.0, growth: 1.3,
+         effects: [Add("link.2.carriers", 1.0)]),
+        (id: "haul_st", name: "Plank haul: +1 cart", base_cost: 25.0, growth: 1.3,
+         effects: [Add("link.3.carriers", 1.0)]),
+        (id: "kiln_cap", name: "Kiln: bigger yard", base_cost: 15.0, growth: 1.2,
+         effects: [Add("node.kiln.out_cap", 10.0), Add("node.kiln.in_cap", 10.0)]),
+        (id: "hire", name: "Hire a worker", base_cost: 20.0, growth: 1.12,
+         effects: [Add("global.workers", 1.0)]),
+        (id: "lift", name: "Tower: faster lift", base_cost: 60.0, growth: 1.25, tier: 1,
+         effects: [Add("node.tower.lift", 0.03)]),
+        (id: "stall", name: "Market: bigger stall", base_cost: 40.0, growth: 1.3, tier: 1,
+         effects: [Add("market.sell_rate", 0.5)]),
+        (id: "glaze", name: "Kiln: glazing (+10% eff)", base_cost: 150.0, growth: 1.4, tier: 2, max_level: 5,
+         effects: [Add("node.kiln.efficiency", 10.0)]),
+    ],
+    gates: [
+        (name: "Scaffold", description: "lift and stall upgrades", condition: Progress(30.0)),
+        (name: "Deep Quarry", description: "new node + glazing", condition: Profit(600.0)),
+    ],
+    events: (enabled: false, frequency: 0.5, severity: 50),
 )

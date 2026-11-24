@@ -1,0 +1,16 @@
+(
+    name: "Expensive Logistics",
+    description: "Everything is far apart and carts are scarce. Logistics is the bottleneck.",
+    chain: "default",
+    overrides: {
+        "link.0.distance": 12.0,
+        "link.1.distance": 15.0,
+        "link.2.distance": 12.0,
+        "link.3.distance": 12.0,
+        "link.0.carriers": 1.0,
+        "link.2.carriers": 1.0,
+        "cost.haul_qk.growth": 1.6,
+        "cost.haul_kt.growth": 1.6,
+        "cost.haul_st.growth": 1.6,
+    },
+)

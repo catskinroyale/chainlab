@@ -1,0 +1,14 @@
+(
+    name: "Volatile Market",
+    description: "Prices swing wildly and crashes are common. Try the threshold sell policy.",
+    chain: "default",
+    overrides: {
+        "market.bricks.volatility": 60.0,
+        "market.planks.volatility": 60.0,
+        "market.bricks.elasticity": 0.05,
+        "market.planks.elasticity": 0.05,
+        "events.enabled": 1.0,
+        "events.frequency": 1.5,
+        "events.severity": 70.0,
+    },
+)

@@ -1,0 +1,10 @@
+(
+    name: "Starved Forest",
+    description: "Low water and slow regrowth: harvest too hard and the forest collapses.",
+    chain: "default",
+    overrides: {
+        "global.water": 0.35,
+        "global.regrowth": 0.03,
+        "node.forest.rate": 0.9,
+    },
+)

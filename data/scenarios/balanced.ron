@@ -1,0 +1,6 @@
+(
+    name: "Balanced",
+    description: "The default chain as designed. The Kiln is the first bottleneck.",
+    chain: "default",
+    overrides: {},
+)
