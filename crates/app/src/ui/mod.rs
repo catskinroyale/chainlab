@@ -780,3 +780,85 @@ pub fn snapshot(
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(w: u16, h: u16, overlay: &str, ticks: u64) -> String {
+        let loaded = scenarios::load("balanced").unwrap();
+        let mut sim = loaded.build(Some(42)).unwrap();
+        sim.run(ticks);
+        snapshot(loaded, sim, w, h, overlay, None)
+    }
+
+    #[test]
+    fn every_screen_renders_at_both_sizes() {
+        for (w, h) in [(100, 35), (80, 24), (160, 50)] {
+            for o in ["none", "help", "shop", "market", "menu", "compare"] {
+                let s = frame(w, h, o, 1200);
+                assert!(s.contains("CHAINLAB"), "{w}x{h} {o}");
+                assert_eq!(s.lines().count(), h as usize);
+            }
+        }
+    }
+
+    #[test]
+    fn main_screen_shows_the_mechanics() {
+        let s = frame(100, 35, "none", 2400);
+        for needle in [
+            "FLOW",
+            "STATS",
+            "LEVERS",
+            "LOG",
+            "Kiln BN",
+            "BOTTLENECK",
+            "[WORK]",
+            "[LOCKED t2]",
+            "COIN",
+        ] {
+            assert!(s.contains(needle), "missing {needle}\n{s}");
+        }
+    }
+
+    #[test]
+    fn too_small_terminal_says_so() {
+        let s = frame(60, 20, "none", 10);
+        assert!(s.contains("needs at least 80x24"));
+    }
+
+    #[test]
+    fn challenge_hides_bottleneck_marker() {
+        let loaded = scenarios::load("balanced").unwrap();
+        let mut sim = loaded.build(Some(1)).unwrap();
+        sim.state.tick = 1500;
+        let s = snapshot(
+            loaded,
+            sim,
+            100,
+            35,
+            "none",
+            Some(ChallengeId::FindBottleneck),
+        );
+        assert!(s.contains("find it yourself"));
+        assert!(!s.contains(" BN"));
+    }
+
+    #[test]
+    fn saved_params_roundtrip() {
+        let loaded = scenarios::load("balanced").unwrap();
+        let mut sim = loaded.build(Some(9)).unwrap();
+        let id = sim.params.id("node.kiln.cycle").unwrap();
+        sim.command(Command::Set(id, 25));
+        let saved = SavedParams {
+            scenario: "balanced".into(),
+            seed: 9,
+            values: sim.params.to_human_map(),
+        };
+        let text = to_ron(&saved).unwrap();
+        let back: SavedParams = ron_options().from_str(&text).unwrap();
+        let mut fresh = loaded.build(Some(9)).unwrap();
+        assert!(fresh.apply_values(&back.values, false).is_empty());
+        assert_eq!(fresh.params.values(), sim.params.values());
+    }
+}

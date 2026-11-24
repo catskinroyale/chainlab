@@ -1,0 +1,32 @@
+// A minimal chain written from scratch, used by the README walkthrough.
+// Run it with:  cargo run --release -- --scenario data/examples/pottery.ron
+(
+    name: "Pottery",
+    resources: [
+        (id: "clay", name: "Clay"),
+        (id: "pots", name: "Pots"),
+    ],
+    globals: (workers_total: 4, worker_upkeep: 0.5, start_coin: 50.0),
+    nodes: [
+        (
+            id: "pit", name: "Clay Pit",
+            kind: Source(output: "clay", rate: 0.8, stock: Depleting(amount: 500.0)),
+            out_cap: 10.0, workers: 2, optimal_workers: 2,
+        ),
+        (
+            id: "pottery", name: "Pottery",
+            kind: Processor(inputs: [("clay", 3.0)], outputs: [("pots", 1.0)], cycle_secs: 5.0),
+            in_cap: 12.0, out_cap: 10.0, workers: 2, optimal_workers: 2,
+        ),
+        (id: "market", name: "Market", kind: Market, in_cap: 20.0),
+    ],
+    links: [
+        (from: "pit", to: "pottery", resource: "clay", carriers: 1, capacity: 3.0, distance_secs: 2.0),
+        (from: "pottery", to: "market", resource: "pots", carriers: 1, capacity: 2.0, distance_secs: 4.0),
+    ],
+    market: (goods: [(resource: "pots", base_price: 9.0, elasticity: 0.05, recovery: 0.05)]),
+    upgrades: [
+        (id: "wheel", name: "Pottery: faster wheel", base_cost: 30.0, growth: 1.25,
+         effects: [Mul("node.pottery.cycle", 0.85)]),
+    ],
+)

@@ -348,3 +348,14 @@ fn full_chain_determinism_with_events_and_purchases() {
             .any(|e| e.kind == chainlab_engine::engine::model::LogKind::Event)
     );
 }
+
+#[test]
+fn example_pottery_chain_runs() {
+    let loaded = scenarios::load("../../data/examples/pottery.ron")
+        .or_else(|_| scenarios::load("data/examples/pottery.ron"))
+        .unwrap();
+    let mut sim = loaded.build(None).unwrap();
+    sim.run(3_000);
+    assert!(sim.state.market[0].sold_total > 0);
+    assert!(scoring::bottleneck(&sim.chain, sim.eff_all(), &sim.state).is_some());
+}
