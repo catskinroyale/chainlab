@@ -1,14 +1,26 @@
 [package]
 name = "chainlab"
-description = "CHAINLAB: a terminal lab for production-chain game mechanics"
+description = "CHAINLAB: a lab for production-chain game mechanics (terminal + native window)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+default-run = "chainlab"
+
+[lib]
+path = "src/lib.rs"
 
 [[bin]]
 name = "chainlab"
 path = "src/main.rs"
 
+[[bin]]
+name = "chainlab-gui"
+path = "src/bin/chainlab-gui.rs"
+
 [dependencies]
 chainlab_engine = { path = "../engine" }
 ratatui = "0.29"
+eframe = { version = "0.31", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+
+[dev-dependencies]
+egui_kittest = { version = "0.31", features = ["wgpu", "snapshot"] }

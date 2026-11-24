@@ -35,6 +35,21 @@ cargo run --release -- --challenge find_the_bottleneck
 The terminal must be at least **80x24**; **100x35** or larger is best. At 80
 columns the stats column narrows and the diagram switches to compact boxes.
 
+### Native window
+
+The same app, same screens and same keys, in its own desktop window
+(eframe/egui), no terminal needed:
+
+```sh
+cargo run --release --bin chainlab-gui
+cargo run --release --bin chainlab-gui -- --challenge lean_chain   # all CLI options work
+```
+
+The window renders the ratatui UI into an off-screen character grid and
+paints it with a monospace font, so it looks exactly like the terminal
+version. Resize the window for more room; **Cmd/Ctrl + / -** zooms. `chainlab --gui`
+and `chainlab-gui --tui` switch front ends.
+
 ### Headless mode
 
 ```sh
@@ -253,8 +268,10 @@ crates/engine   chainlab_engine: pure library, depends only on serde + ron
   scenarios/      built-in + on-disk scenario loading
   challenges/     challenge definitions, lever locks, scoring
   fixed.rs rng.rs fixed-point maths, deterministic RNG
-crates/app      chainlab binary: CLI + ratatui UI (thin layer)
-  ui/             theme, widgets, flow diagram, panels, overlays, background worker
+crates/app      chainlab + chainlab-gui binaries (thin layers)
+  cli.rs          shared command line
+  ui/             ratatui UI: theme, widgets, flow diagram, panels, overlays, worker
+  gui/            native window: draws the ui/ screens into an egui window
 data/           default chain, scenarios, example chain
 ```
 

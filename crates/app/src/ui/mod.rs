@@ -109,6 +109,21 @@ impl App {
         }
     }
 
+    /// Build the app, optionally jumping straight into a challenge.
+    pub fn start(loaded: Loaded, sim: Sim, challenge: Option<ChallengeId>) -> App {
+        let mut app = App::new(loaded, sim);
+        if let Some(id) = challenge {
+            let seed = app.sim.seed;
+            app.start_challenge(id, seed);
+        }
+        app
+    }
+
+    /// Has the player asked to quit?
+    pub fn quit_requested(&self) -> bool {
+        self.quit
+    }
+
     pub fn say(&mut self, msg: impl Into<String>) {
         self.flash = Some((msg.into(), Instant::now()));
     }
@@ -183,7 +198,8 @@ impl App {
         Ok(())
     }
 
-    fn advance(&mut self, dt: Duration) {
+    /// Advance the simulation by real time `dt` at the current speed.
+    pub fn advance(&mut self, dt: Duration) {
         if !self.paused {
             let speed = SPEEDS[self.speed];
             if speed.is_infinite() {
@@ -246,7 +262,8 @@ impl App {
         }
     }
 
-    fn background(&mut self) {
+    /// Collect background analysis results and schedule new ones.
+    pub fn background(&mut self) {
         for d in self.worker.poll() {
             match d {
                 Done::Payback { tick, list } => {
@@ -438,7 +455,8 @@ impl App {
 
     // ----- input -----
 
-    fn on_key(&mut self, k: KeyEvent) {
+    /// Handle one key press (shared by the terminal and window front ends).
+    pub fn on_key(&mut self, k: KeyEvent) {
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
             self.quit = true;
             return;
@@ -724,11 +742,7 @@ fn defaults_map(sim: &Sim) -> BTreeMap<String, f64> {
 /// Run the TUI.
 pub fn run(loaded: Loaded, sim: Sim, challenge: Option<ChallengeId>) -> io::Result<()> {
     let mut terminal = ratatui::init();
-    let mut app = App::new(loaded, sim);
-    if let Some(id) = challenge {
-        let seed = app.sim.seed;
-        app.start_challenge(id, seed);
-    }
+    let mut app = App::start(loaded, sim, challenge);
     let r = app.main_loop(&mut terminal);
     ratatui::restore();
     r
