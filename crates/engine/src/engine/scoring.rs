@@ -26,6 +26,10 @@
 //! 4. A node that is Off or has no crew while work is waiting has load 1.0.
 //!    Idle is the tightest constraint of all.
 //!
+//! A link's load is the goods it keeps on the road vs the most it could
+//! (carts x load / 2): half-empty carts count half, and carts waiting to
+//! unload at a full destination don't count (that's the receiver's fault).
+//!
 //! If nothing is above 85% load the chain has slack everywhere and no single
 //! bottleneck is reported. Supporting evidence is the classic status
 //! pattern: feeders **Blocked** (backed up behind it) and consumers
@@ -208,10 +212,10 @@ pub fn candidates(chain: &Chain, eff: &[i64], st: &State) -> Vec<Bottleneck> {
         }
         let cap = link_capacity_per_min(chain, eff, li);
         let actual = st.stats.links[li].delivered.per_window();
-        let load = if cap <= 0 {
+        let load = if eff[l.p.carriers] <= 0 {
             1.0
         } else {
-            (to_f64(actual) / to_f64(cap)).clamp(0.0, 1.0)
+            st.stats.links[li].load()
         };
         out.push(Bottleneck {
             at: Limiter::Link(li),
@@ -246,7 +250,7 @@ fn mean(v: &[f64]) -> f64 {
 /// The current bottleneck, if one stands out.
 pub fn bottleneck(chain: &Chain, eff: &[i64], st: &State) -> Option<Bottleneck> {
     // Need some history before judging.
-    if st.stats.nodes.first().is_none_or(|n| n.out.len() < 100) {
+    if st.stats.nodes.first().is_none_or(|n| n.out.len() < 300) {
         return None;
     }
     candidates(chain, eff, st)

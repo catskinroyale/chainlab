@@ -288,7 +288,7 @@ impl ChallengeRun {
             return;
         }
         let tick = sim.state.tick;
-        if tick % TICKS_PER_SEC != 0 {
+        if !tick.is_multiple_of(TICKS_PER_SEC) {
             return;
         }
         let secs = tick / TICKS_PER_SEC;

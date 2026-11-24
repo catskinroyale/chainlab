@@ -138,19 +138,36 @@ impl NodeStats {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkStats {
+    /// Carts not free (travelling, unloading-wait, or returning).
     pub busy: Ring,
+    /// Goods on the road this tick (excludes carts waiting to unload).
+    pub cargo: Ring,
+    /// What the link could have on the road: carts * load / 2 (carts spend
+    /// half of each round trip coming back empty).
+    pub motion_cap: Ring,
     pub carriers: Ring,
     pub delivered: Ring,
 }
 
 impl LinkStats {
-    /// Average share of carriers busy over the window, 0.0..=1.0.
+    /// Transport load, 0.0..=1.0: goods actually on the road vs the most
+    /// the link can keep on the road. Half-empty carts count as half used,
+    /// and carts stuck waiting at a full destination don't count at all
+    /// (that's the receiver's problem, not the link's).
     pub fn load(&self) -> f64 {
-        if self.carriers.sum() == 0 {
-            0.0
-        } else {
-            self.busy.sum() as f64 / self.carriers.sum() as f64
-        }
+        ratio(self.cargo.sum(), self.motion_cap.sum())
+    }
+    /// Share of carts not free for any reason.
+    pub fn busy_share(&self) -> f64 {
+        ratio(self.busy.sum(), self.carriers.sum())
+    }
+}
+
+fn ratio(a: i64, b: i64) -> f64 {
+    if b == 0 {
+        0.0
+    } else {
+        (a as f64 / b as f64).min(1.0)
     }
 }
 
@@ -189,6 +206,8 @@ impl Stats {
             links: (0..chain.links.len())
                 .map(|_| LinkStats {
                     busy: Ring::new(WINDOW),
+                    cargo: Ring::new(WINDOW),
+                    motion_cap: Ring::new(WINDOW),
                     carriers: Ring::new(WINDOW),
                     delivered: Ring::new(WINDOW),
                 })
@@ -261,6 +280,16 @@ pub fn record(chain: &Chain, eff: &[i64], st: &mut State) {
     }
     for (li, (ls, s)) in links.iter().zip(stats.links.iter_mut()).enumerate() {
         s.busy.push(ls.shipments.len() as i64);
+        let cargo: Fx = ls
+            .shipments
+            .iter()
+            .filter(|sh| sh.outbound() && *tick < sh.arrive)
+            .map(|sh| sh.qty)
+            .sum();
+        s.cargo.push(cargo);
+        let p = &chain.links[li].p;
+        s.motion_cap
+            .push(eff[p.carriers].max(0) * eff[p.capacity].max(0) / 2);
         s.carriers.push(eff[chain.links[li].p.carriers].max(0));
         s.delivered.push(ls.delivered_tick);
     }
