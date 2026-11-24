@@ -14,6 +14,7 @@
 //! 4. [`engine::workers`]    crew size and diminishing returns
 //! 5. [`engine::stats`]      how throughput and utilisation are measured
 
+pub mod challenges;
 pub mod config;
 pub mod engine;
 pub mod fixed;

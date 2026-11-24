@@ -68,7 +68,7 @@ pub fn tick(chain: &Chain, eff: &[i64], st: &mut State) {
         // Drift: mean-reverting random walk, clamped to a sane band.
         let vol = eff[good.volatility] as f64 / 100.0;
         let d = to_f64(gs.drift);
-        let d = d + (1.0 - d) * 0.1 / TICKS_PER_SEC as f64 + vol * 0.03 * u;
+        let d = d + (1.0 - d) * 0.03 / TICKS_PER_SEC as f64 + vol * 0.03 * u;
         gs.drift = fx(d.clamp(0.2, 3.0));
 
         gs.pressure = recover(gs.pressure, eff[good.recovery]);

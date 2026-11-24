@@ -286,7 +286,8 @@ impl Sim {
         unknown
     }
 
-    fn refresh_eff(&mut self) {
+    /// Rebuild effective values (after editing params or state directly).
+    pub fn refresh_eff(&mut self) {
         self.eff = compute_eff(&self.chain, &self.params, &self.state);
     }
 
