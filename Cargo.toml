@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/engine", "crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+ron = "0.8"
+
+[profile.release]
+debug = false

@@ -1,0 +1,40 @@
+// CHAINLAB default chain (milestone 1: one branch).
+// Units: quantities in units, times in seconds, efficiency in percent.
+(
+    name: "Default",
+    resources: [
+        (id: "stone", name: "Stone"),
+        (id: "bricks", name: "Bricks"),
+    ],
+    globals: (
+        diminishing: 50,
+        water_supply: 1.0,
+        regrowth: 0.05,
+    ),
+    nodes: [
+        (
+            id: "quarry",
+            name: "Stone Quarry",
+            kind: Source(output: "stone", rate: 1.0, variance: 15),
+            out_cap: 20.0,
+            workers: 2,
+            optimal_workers: 2,
+        ),
+        (
+            id: "kiln",
+            name: "Kiln",
+            kind: Processor(
+                inputs: [("stone", 2.0)],
+                outputs: [("bricks", 1.0)],
+                cycle_secs: 4.0,
+            ),
+            in_cap: 20.0,
+            out_cap: 30.0,
+            workers: 2,
+            optimal_workers: 2,
+        ),
+    ],
+    links: [
+        (from: "quarry", to: "kiln", resource: "stone", carriers: 2, capacity: 4.0, distance_secs: 3.0),
+    ],
+)

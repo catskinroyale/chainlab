@@ -1,0 +1,13 @@
+[package]
+name = "chainlab"
+description = "CHAINLAB: a terminal lab for production-chain game mechanics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "chainlab"
+path = "src/main.rs"
+
+[dependencies]
+chainlab_engine = { path = "../engine" }
