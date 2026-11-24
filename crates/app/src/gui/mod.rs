@@ -108,9 +108,14 @@ impl eframe::App for Gui {
     }
 }
 
-/// Paint a ratatui buffer as a character grid. Runs of cells with the same
-/// style are drawn as one text shape, each run anchored at its own column so
-/// alignment never drifts.
+/// Paint a ratatui buffer as a character grid, the way a terminal emulator
+/// does:
+///
+/// * every glyph is placed at its own cell origin (laying out whole runs of
+///   text lets per-glyph pixel rounding accumulate and drift off the grid);
+/// * box-drawing and block characters are drawn as geometry that fills the
+///   cell exactly, so lines join seamlessly across rows and gauges never
+///   overhang into the next cell.
 pub fn paint_buffer(
     painter: &egui::Painter,
     buf: &Buffer,
@@ -128,48 +133,208 @@ pub fn paint_buffer(
         0.0,
         BG,
     );
+    let cell_rect = |x: u16, y: u16| {
+        Rect::from_min_max(
+            Pos2::new(origin.x + x as f32 * cw, origin.y + y as f32 * rh),
+            Pos2::new(
+                origin.x + (x + 1) as f32 * cw,
+                origin.y + (y + 1) as f32 * rh,
+            ),
+        )
+    };
+    // Backgrounds first, merged into runs.
     for y in 0..area.height {
         let mut x = 0;
         while x < area.width {
-            let Some(cell) = buf.cell((x, y)) else { break };
-            let (fg, bg, bold) = (cell.fg, cell.bg, cell.modifier.contains(Modifier::BOLD));
+            let bg = buf.cell((x, y)).map_or(Color::Reset, |c| c.bg);
             let start = x;
-            let mut text = String::new();
-            while x < area.width {
-                let Some(c) = buf.cell((x, y)) else { break };
-                if c.fg != fg || c.bg != bg || c.modifier.contains(Modifier::BOLD) != bold {
-                    break;
-                }
-                let sym = c.symbol();
-                text.push_str(if sym.is_empty() { " " } else { sym });
+            while x < area.width && buf.cell((x, y)).map_or(Color::Reset, |c| c.bg) == bg {
                 x += 1;
             }
-            let pos = Pos2::new(origin.x + start as f32 * cw, origin.y + y as f32 * rh).round();
             let bgc = to_color32(bg, BG);
             if bgc != BG {
-                painter.rect_filled(
-                    Rect::from_min_size(pos, Vec2::new((x - start) as f32 * cw, rh)),
-                    0.0,
-                    bgc,
-                );
+                let r = cell_rect(start, y).union(cell_rect(x - 1, y));
+                painter.rect_filled(r, 0.0, bgc);
             }
-            if text.trim().is_empty() {
+        }
+    }
+    // Then glyphs, one per cell.
+    for y in 0..area.height {
+        for x in 0..area.width {
+            let Some(cell) = buf.cell((x, y)) else {
+                continue;
+            };
+            let sym = cell.symbol();
+            let mut chars = sym.chars();
+            let (Some(ch), None) = (chars.next(), chars.next()) else {
+                continue;
+            };
+            if ch == ' ' {
                 continue;
             }
-            let fgc = to_color32(fg, FG);
-            painter.text(pos, Align2::LEFT_TOP, &text, font.clone(), fgc);
-            if bold {
+            let fg = to_color32(cell.fg, FG);
+            let r = cell_rect(x, y);
+            if draw_special(painter, ch, r, fg) {
+                continue;
+            }
+            let pos = r.min.round();
+            painter.text(pos, Align2::LEFT_TOP, ch, font.clone(), fg);
+            if cell.modifier.contains(Modifier::BOLD) {
                 // Fake bold: a second pass offset by a fraction of a pixel.
                 painter.text(
                     pos + Vec2::new(0.6, 0.0),
                     Align2::LEFT_TOP,
-                    &text,
+                    ch,
                     font.clone(),
-                    fgc,
+                    fg,
                 );
             }
         }
     }
+}
+
+/// Which arms a box-drawing character has: (up, down, left, right, double).
+fn box_arms(c: char) -> Option<(bool, bool, bool, bool, bool)> {
+    Some(match c {
+        '─' => (false, false, true, true, false),
+        '│' => (true, true, false, false, false),
+        '┌' => (false, true, false, true, false),
+        '┐' => (false, true, true, false, false),
+        '└' => (true, false, false, true, false),
+        '┘' => (true, false, true, false, false),
+        '├' => (true, true, false, true, false),
+        '┤' => (true, true, true, false, false),
+        '┬' => (false, true, true, true, false),
+        '┴' => (true, false, true, true, false),
+        '┼' => (true, true, true, true, false),
+        '═' => (false, false, true, true, true),
+        '║' => (true, true, false, false, true),
+        '╔' => (false, true, false, true, true),
+        '╗' => (false, true, true, false, true),
+        '╚' => (true, false, false, true, true),
+        '╝' => (true, false, true, false, true),
+        _ => return None,
+    })
+}
+
+/// Draw box-drawing and block characters as cell-filling geometry.
+/// Returns false for anything that should be drawn as a font glyph.
+fn draw_special(painter: &egui::Painter, ch: char, r: Rect, fg: Color32) -> bool {
+    let (w, h) = (r.width(), r.height());
+    // Block elements.
+    let lower = |eighths: f32| {
+        Rect::from_min_max(Pos2::new(r.left(), r.bottom() - h * eighths / 8.0), r.max)
+    };
+    let shade = |a: f32| {
+        let [cr, cg, cb, _] = fg.to_array();
+        Color32::from_rgb(
+            (cr as f32 * a) as u8,
+            (cg as f32 * a) as u8,
+            (cb as f32 * a) as u8,
+        )
+    };
+    match ch {
+        // Full blocks get a hairline inset top and bottom so bars on
+        // neighbouring rows stay readable as separate rows.
+        '█' => {
+            painter.rect_filled(r.shrink2(Vec2::new(0.0, h * 0.08)), 0.0, fg);
+            return true;
+        }
+        '▁'..='▇' => {
+            let n = (ch as u32 - '▁' as u32 + 1) as f32;
+            painter.rect_filled(lower(n), 0.0, fg);
+            return true;
+        }
+        // Shades: solid fills at reduced brightness, plus a thin top edge
+        // so adjacent shaded cells still read as separate states.
+        '░' | '▒' | '▓' => {
+            let a = match ch {
+                '░' => 0.28,
+                '▒' => 0.5,
+                _ => 0.75,
+            };
+            painter.rect_filled(r.shrink2(Vec2::new(0.0, h * 0.08)), 0.0, shade(a));
+            return true;
+        }
+        _ => {}
+    }
+    let Some((up, down, left, right, double)) = box_arms(ch) else {
+        return false;
+    };
+    let t = (h * 0.07).clamp(1.0, 2.0);
+    let stroke = egui::Stroke::new(t, fg);
+    let c = r.center();
+    let (cx, cy) = (c.x.round() + 0.5, c.y.round() + 0.5);
+    if !double {
+        if left {
+            painter.line_segment([Pos2::new(r.left(), cy), Pos2::new(cx, cy)], stroke);
+        }
+        if right {
+            painter.line_segment([Pos2::new(cx, cy), Pos2::new(r.right(), cy)], stroke);
+        }
+        if up {
+            painter.line_segment([Pos2::new(cx, r.top()), Pos2::new(cx, cy)], stroke);
+        }
+        if down {
+            painter.line_segment([Pos2::new(cx, cy), Pos2::new(cx, r.bottom())], stroke);
+        }
+        // Fill the joint so corners are square, not notched.
+        painter.rect_filled(
+            Rect::from_center_size(Pos2::new(cx, cy), Vec2::splat(t)),
+            0.0,
+            fg,
+        );
+        return true;
+    }
+    // Double lines: two parallel strokes `g` either side of the centre.
+    // Corners join the outer pair and the inner pair.
+    let g = (w * 0.18).max(t + 1.0).round();
+    let horiz = |y: f32, x0: f32, x1: f32| {
+        painter.line_segment([Pos2::new(x0, y), Pos2::new(x1, y)], stroke);
+    };
+    let vert = |x: f32, y0: f32, y1: f32| {
+        painter.line_segment([Pos2::new(x, y0), Pos2::new(x, y1)], stroke);
+    };
+    match (up, down, left, right) {
+        (false, false, true, true) => {
+            horiz(cy - g, r.left(), r.right());
+            horiz(cy + g, r.left(), r.right());
+        }
+        (true, true, false, false) => {
+            vert(cx - g, r.top(), r.bottom());
+            vert(cx + g, r.top(), r.bottom());
+        }
+        (false, true, false, true) => {
+            // ╔
+            horiz(cy - g, cx - g, r.right());
+            vert(cx - g, cy - g, r.bottom());
+            horiz(cy + g, cx + g, r.right());
+            vert(cx + g, cy + g, r.bottom());
+        }
+        (false, true, true, false) => {
+            // ╗
+            horiz(cy - g, r.left(), cx + g);
+            vert(cx + g, cy - g, r.bottom());
+            horiz(cy + g, r.left(), cx - g);
+            vert(cx - g, cy + g, r.bottom());
+        }
+        (true, false, false, true) => {
+            // ╚
+            horiz(cy + g, cx - g, r.right());
+            vert(cx - g, r.top(), cy + g);
+            horiz(cy - g, cx + g, r.right());
+            vert(cx + g, r.top(), cy - g);
+        }
+        (true, false, true, false) => {
+            // ╝
+            horiz(cy + g, r.left(), cx + g);
+            vert(cx + g, r.top(), cy + g);
+            horiz(cy - g, r.left(), cx - g);
+            vert(cx - g, r.top(), cy - g);
+        }
+        _ => return false,
+    }
+    true
 }
 
 /// ratatui colour -> egui colour (xterm-256 palette for indexed colours).
@@ -390,8 +555,28 @@ mod tests {
         };
         let loaded = scenarios::load("balanced").unwrap();
         let mut sim = loaded.build(Some(42)).unwrap();
-        sim.run(3000);
-        let mut gui = Gui::new(App::start(loaded, sim, None));
+        // A busy mid-game state: changed levers, extra buildings, tier 2.
+        let sets: std::collections::BTreeMap<String, f64> = [
+            ("global.workers", 72.0),
+            ("node.quarry.workers", 10.0),
+            ("node.kiln.workers", 10.0),
+            ("node.kiln.units", 2.0),
+            ("node.sawmill.workers", 8.0),
+            ("node.sawmill.units", 3.0),
+            ("node.sawmill.in_cap", 22.0),
+            ("node.sawmill.out_cap", 40.0),
+            ("node.deep_quarry.workers", 7.0),
+            ("link.2.carriers", 4.0),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        sim.apply_values(&sets, false);
+        sim.run(11_600);
+        let mut app = App::start(loaded, sim, None);
+        app.group = 4; // Sawmill levers, like the bug report
+        app.sel = 6;
+        let mut gui = Gui::new(app);
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::Vec2::new(1100.0, 740.0))
             .wgpu()

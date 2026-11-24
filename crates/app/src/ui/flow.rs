@@ -437,9 +437,10 @@ type Segs = Vec<(String, Style)>;
 
 /// "lbl████░░ 12" in exactly `w` cells.
 fn gauge_line(theme: &Theme, label: &str, v: Fx, cap: Fx, w: usize) -> Segs {
-    let val = rfit(&num(v), 4);
+    // One blank cell between the bar and the number keeps them distinct.
+    let val = rfit(&num(v), 5);
     let lw = label.chars().count();
-    let gw = w.saturating_sub(lw + 4).max(1);
+    let gw = w.saturating_sub(lw + 5).max(1);
     let full = cap > 0 && v >= cap;
     let empty = v <= 0;
     let gstyle = if full {
